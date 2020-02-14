@@ -12,6 +12,11 @@ class ResPartner(models.Model):
     _inherit = 'res.partner'
 
     comercial = fields.Char('Trade name', size=128, index=True)
+    display_name = fields.Char(compute='_compute_display_name')
+
+    @api.depends('comercial')
+    def _compute_display_name(self):
+        super(ResPartner, self)._compute_display_name()
 
     @api.model
     def search(self, args, offset=0, limit=None, order=None, count=False):
@@ -56,9 +61,12 @@ class ResPartner(models.Model):
     @api.multi
     def name_get(self):
         result = []
-        name_pattern = self.env['ir.config_parameter'].get_param(
+        name_pattern = self.env['ir.config_parameter'].sudo().get_param(
             'l10n_es_partner.name_pattern', default='')
-        orig_name = dict(super(ResPartner, self).name_get())
+        origin = super(ResPartner, self).name_get()
+        if self.env.context.get('no_display_commercial', False):
+            return origin
+        orig_name = dict(origin)
         for partner in self:
             name = orig_name[partner.id]
             comercial = partner.comercial

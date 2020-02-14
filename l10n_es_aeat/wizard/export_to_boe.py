@@ -1,8 +1,8 @@
-# -*- coding: utf-8 -*-
 # Copyright 2004-2011 Luis Manuel Angueira Blanco (http://pexego.es)
 # Copyright 2013 Ignacio Ibeas (http://acysos.com)
 # Copyright 2016 Antonio Espinosa <antonio.espinosa@tecnativa.com>
 # Copyright 2016 Angel Moya <odoo@tecnativa.com>
+# Copyright 2019 Tecnativa - Pedro M. Baeza
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 import base64
@@ -45,7 +45,7 @@ class L10nEsAeatReportExportToBoe(models.TransientModel):
         text = ''.join([unidecode(x) if x not in ('Ñ', 'Ç') else x
                         for x in text])
         text = re.sub(
-            r"[^A-Z0-9\s\.,-_&'´\\:;/\(\)ÑÇ\"]", '', text, re.UNICODE | re.X)
+            r"[^A-Z0-9\s\.,-_&'´\\:;/\(\)ÑÇ]", '', text, re.UNICODE | re.X)
         ascii_string = text.encode('iso-8859-1')
         # Cut the string if it is too long
         if len(ascii_string) > length:
@@ -63,6 +63,16 @@ class L10nEsAeatReportExportToBoe(models.TransientModel):
             _("The formated string must match the given length")
         # Return string
         return ascii_string
+
+    def _format_alphabetic_string(self, text, length, fill=' ', align='<'):
+        u"""Format the string into a fixed length ASCII (iso-8859-1) record
+            without numbers.
+        """
+        if not text:
+            return fill * length
+        # Replace numbers
+        name = re.sub(r"[\d-]", '', text, re.UNICODE | re.X)
+        return self._format_string(name, length, fill=fill, align=align)
 
     def _format_number(self, number, int_length, dec_length=0,
                        include_sign=False, positive_sign=' ',
@@ -191,7 +201,7 @@ class L10nEsAeatReportExportToBoe(models.TransientModel):
         val = b''
         if line.conditional_expression:
             if not merge_eval(line.conditional_expression):
-                return ''
+                return val
         if line.repeat_expression:
             obj_list = merge_eval(line.repeat_expression)
         else:
@@ -217,6 +227,10 @@ class L10nEsAeatReportExportToBoe(models.TransientModel):
             return self._format_string(val or '', line.size, align=align)
         elif line.export_type == 'boolean':
             return self._format_boolean(val, line.bool_yes, line.bool_no)
+        elif line.export_type == 'alphabetic':
+            align = '>' if line.alignment == 'right' else '<'
+            return self._format_alphabetic_string(
+                val or '', line.size, align=align)
         else:  # float or integer
             decimal_size = (0 if line.export_type == 'integer' else
                             line.decimal_size)

@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-# Copyright 2015-2017 Pedro M. Baeza
+# Copyright 2015-2019 Pedro M. Baeza
 # License AGPL-3 - See https://www.gnu.org/licenses/agpl-3.0.html
 
 from odoo.tests import common
@@ -7,8 +6,6 @@ from odoo import exceptions
 from ..hooks import post_init_hook
 
 
-@common.at_install(False)
-@common.post_install(True)
 class TestCreateChart(common.SavepointCase):
     @classmethod
     def setUpClass(cls):
@@ -101,6 +98,9 @@ class TestCreateChart(common.SavepointCase):
             'company_id': self.company.id,
         })
         self.assertEqual(journal.sequence_id, prev_journal.sequence_id)
+        old_prefix = journal.sequence_id.prefix
+        journal.write({'code': 'TT'})
+        self.assertEqual(old_prefix, journal.sequence_id.prefix)
 
     def test_journal_constrains(self):
         other_company = self.env['res.company'].create(

@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 # Copyright 2004-2011 Pexego Sistemas Informáticos - Luis Manuel Angueira
 # Copyright 2013 - Acysos S.L. - Ignacio Ibeas (Migración a v7)
-# Copyright 2014-2017 Tecnativa - Pedro M. Baeza <pedro.baeza@tecnativa.com>
+# Copyright 2014-2019 Tecnativa - Pedro M. Baeza
 # Copyright 2016 Antonio Espinosa <antonio.espinosa@tecnativa.com>
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
 
 import re
 from calendar import monthrange
 from odoo import _, api, fields, exceptions, models
-from odoo.tools import config
+from odoo.tools import config, ormcache
 from datetime import datetime
+from .spanish_states_mapping import SPANISH_STATES as ss
 
 
 class L10nEsAeatReport(models.AbstractModel):
@@ -20,6 +21,7 @@ class L10nEsAeatReport(models.AbstractModel):
     _period_quarterly = True
     _period_monthly = True
     _period_yearly = False
+    SPANISH_STATES = ss
 
     def _default_company_id(self):
         company_obj = self.env['res.company']
@@ -95,6 +97,9 @@ class L10nEsAeatReport(models.AbstractModel):
     contact_phone = fields.Char(
         string="Phone", size=9, required=True, readonly=True,
         states={'draft': [('readonly', False)]})
+    contact_email = fields.Char(
+        string="Contact email", size=50, readonly=True,
+        states={'draft': [('readonly', False)]})
     representative_vat = fields.Char(
         string="L.R. VAT number", size=9, readonly=True,
         help="Legal Representative VAT number.",
@@ -124,7 +129,8 @@ class L10nEsAeatReport(models.AbstractModel):
             ('posted', 'Posted'),
             ('cancelled', 'Cancelled'),
         ], string='State', default='draft', readonly=True)
-    name = fields.Char(string="Report identifier", size=13, oldname='sequence')
+    name = fields.Char(string="Report identifier", size=13, oldname='sequence',
+                       copy=False)
     model_id = fields.Many2one(
         comodel_name="ir.model", string="Model",
         compute='_compute_report_model', oldname='model')
@@ -196,6 +202,24 @@ class L10nEsAeatReport(models.AbstractModel):
                       "a previous declaration number should be provided.")
                 )
 
+    @ormcache('tax_template', 'company_id')
+    def _get_tax_id_from_tax_template(self, tax_template, company_id):
+        xmlids = self.env['ir.model.data'].search_read([
+            ('model', '=', 'account.tax.template'),
+            ('res_id', '=', tax_template.id)
+        ], ['name', 'module'])
+        return xmlids and self.env['ir.model.data'].search([
+            ('model', '=', 'account.tax'),
+            ('module', '=', xmlids[0]['module']),
+            ('name', '=', '{}_{}'.format(company_id, xmlids[0]['name']))
+        ]).res_id or False
+
+    def get_taxes_from_templates(self, tax_templates):
+        company_id = self.company_id.id or self.env.user.company_id.id
+        tax_ids = [self._get_tax_id_from_tax_template(tmpl, company_id)
+                   for tmpl in tax_templates]
+        return self.env['account.tax'].browse(tax_ids)
+
     @api.onchange('company_id')
     def onchange_company_id(self):
         """Load some company data (the VAT number) when company changes.
@@ -206,6 +230,7 @@ class L10nEsAeatReport(models.AbstractModel):
             self.company_vat = re.match(
                 "(ES){0,1}(.*)", self.company_id.vat).groups()[1]
         self.contact_name = self.env.user.name
+        self.contact_email = self.env.user.email
         self.contact_phone = self._filter_phone(
             self.env.user.partner_id.phone or
             self.env.user.partner_id.mobile or
@@ -288,7 +313,7 @@ class L10nEsAeatReport(models.AbstractModel):
         return self.search([
             ('year', '=', self.year),
             ('date_start', '<', date),
-        ]) or None
+        ])
 
     @api.multi
     def calculate(self):
@@ -305,7 +330,7 @@ class L10nEsAeatReport(models.AbstractModel):
     def _prepare_move_vals(self):
         self.ensure_one()
         return {
-            'date': fields.Date.today(),
+            'date': self.date_end,
             'journal_id': self.journal_id.id,
             'ref': self.name,
             'company_id': self.company_id.id,
@@ -381,8 +406,9 @@ class L10nEsAeatReport(models.AbstractModel):
         return (phone or '').replace(" ", "")[-9:]
 
     @api.model_cr
-    def _register_hook(self):
-        res = super(L10nEsAeatReport, self)._register_hook()
+    def _register_hook(self, companies=None):
+        if not companies:
+            res = super(L10nEsAeatReport, self)._register_hook()
         if self._name in ('l10n.es.aeat.report',
                           'l10n.es.aeat.report.tax.mapping'):
             return res
@@ -394,7 +420,8 @@ class L10nEsAeatReport(models.AbstractModel):
             ))
         seq_obj = self.env['ir.sequence']
         sequence = "aeat%s-sequence" % aeat_num
-        companies = self.env['res.company'].search([])
+        if not companies:
+            companies = self.env['res.company'].search([])
         for company in companies:
             seq = seq_obj.search([
                 ('name', '=', sequence), ('company_id', '=', company.id),
@@ -416,3 +443,16 @@ class L10nEsAeatReport(models.AbstractModel):
         if not date:
             return ''
         return datetime.strftime(fields.Date.from_string(date), "%d%m%Y")
+
+    @api.model
+    def get_html(self):
+        """ Render dynamic view from ir.action.client"""
+        result = {}
+        rcontext = {}
+        rec = self.browse(self.env.context.get('active_id'))
+        if rec:
+            rcontext['o'] = rec
+            result['html'] = self.env.ref(self.env.context.get(
+                'template_name')).render(
+                rcontext)
+        return result

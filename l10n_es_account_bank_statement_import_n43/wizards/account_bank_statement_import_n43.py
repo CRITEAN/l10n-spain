@@ -3,6 +3,16 @@
 
 from odoo import models, fields, api, exceptions, _
 from datetime import datetime
+import logging
+_logger = logging.getLogger(__name__)
+
+try:
+    import chardet
+except ImportError:
+    _logger.warning(
+        "chardet library not found,  please install it "
+        "from http://pypi.python.org/pypi/chardet"
+    )
 
 account_mapping = {
     '01': '4300%00',
@@ -178,19 +188,32 @@ class AccountBankStatementImport(models.TransientModel):
                 # CTRL-Z (^Z), is often used as an end-of-file marker in DOS
                 continue
             else:  # pragma: no cover
-                raise exceptions.UserError(
+                raise exceptions.ValidationError(
                     _('Record type %s is not valid.') % raw_line[0:2])
             # Update the record counter
             st_data['_num_records'] += 1
         return st_data['groups']
 
+    @api.model
+    def _get_common_file_encodings(self):
+        """Returns a list with commonly used encodings"""
+        return ['iso-8859-1', 'utf-8-sig']
+
     def _check_n43(self, data_file):
-        data_file = data_file.decode('iso-8859-1')
-        try:
-            n43 = self._parse(data_file)
-        except exceptions.ValidationError:  # pragma: no cover
-            return False
-        return n43
+        # We'll try to decode with the encoding detected by chardet first
+        # otherwise, we'll try with another common encodings until success
+        encodings = self._get_common_file_encodings()
+        # Try to guess the encoding of the data file
+        detected_encoding = chardet.detect(data_file).get('encoding', False)
+        if detected_encoding:
+            encodings += [detected_encoding]
+        while encodings:
+            try:
+                data_decoded = data_file.decode(encodings.pop())
+                return self._parse(data_decoded)
+            except (UnicodeDecodeError, exceptions.ValidationError):
+                pass
+        return False
 
     def _get_ref(self, line):
         try:
@@ -296,7 +319,9 @@ class AccountBankStatementImport(models.TransientModel):
             self.env.context.get('journal_id', [])
         )
         transactions = []
+        date = False
         for group in n43:
+            date = fields.Date.to_string(group['fecha_ini'].date())
             for line in group['lines']:
                 conceptos = []
                 for concept_line in line['conceptos']:
@@ -304,7 +329,9 @@ class AccountBankStatementImport(models.TransientModel):
                         x.strip() for x in line['conceptos'][concept_line]
                         if x.strip())
                 vals_line = {
-                    'date': fields.Date.to_string(line[journal.n43_date_type]),
+                    'date': fields.Date.to_string(
+                        line[journal.n43_date_type or 'fecha_valor']
+                    ),
                     'name': ' '.join(conceptos),
                     'ref': self._get_ref(line),
                     'amount': line['importe'],
@@ -321,6 +348,8 @@ class AccountBankStatementImport(models.TransientModel):
             'balance_start': n43 and n43[0]['saldo_ini'] or 0.0,
             'balance_end_real': n43 and n43[-1]['saldo_fin'] or 0.0,
         }
+        if date:
+            vals_bank_statement['date'] = date
         return None, None, [vals_bank_statement]
 
     def _complete_stmts_vals(self, stmts_vals, journal, account_number):
